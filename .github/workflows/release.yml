@@ -39,7 +39,7 @@ jobs:
           uv run --no-project python - <<'PY'
           import hashlib
           from pathlib import Path
-          files = sorted(Path('dist').glob('*'))
+          files = sorted([*Path('dist').glob('*.whl'), *Path('dist').glob('*.tar.gz')])
           Path('dist/SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in files if p.is_file()))
           PY
       - uses: actions/upload-artifact@v4
