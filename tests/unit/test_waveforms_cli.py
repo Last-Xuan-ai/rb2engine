@@ -10,6 +10,7 @@ from __future__ import annotations
 import builtins
 import importlib
 import json
+import platform
 import sqlite3
 import subprocess
 import sys
@@ -74,10 +75,15 @@ def engine(tmp_path):
 
 
 @pytest.fixture
-def publication(monkeypatch):
+def publication(monkeypatch, tmp_path):
     pytest.importorskip("numpy")
     module = importlib.import_module("rb2engine.overviews.publication")
     monkeypatch.setattr(module, "prepare", Mock(return_value={"tracks": 1}))
+    # These tests stub generation to inspect CLI selection/report semantics.
+    # Cache discovery must not invoke the native backend's platform guard or
+    # touch the user's cache. The real Windows guard is tested independently.
+    build = importlib.import_module("rb2engine.overviews._build")
+    monkeypatch.setattr(build, "build_cache", lambda: tmp_path / "build")
     return module
 
 
@@ -157,6 +163,18 @@ def test_generate_default_cache_is_sibling_of_native_build_cache(
     result = runner.invoke(waveforms, ["generate", str(audio)])
     assert result.exit_code == 0, result.output
     generator.generate.assert_called_once_with(audio, build.parent / "waveforms")
+
+
+def test_windows_generation_is_rejected_with_real_backend(runner, monkeypatch, tmp_path):
+    pytest.importorskip("numpy")
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"guard must run before audio probing")
+    cache = tmp_path / "cache"
+    result = runner.invoke(waveforms, ["generate", str(audio), "--cache", str(cache)])
+    assert result.exit_code != 0
+    assert "Windows waveform generation is not supported" in result.output
+    assert not cache.exists()
 
 
 def test_verify_cache_reports_backend_verification(runner, generator, tmp_path):

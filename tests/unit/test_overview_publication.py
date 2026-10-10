@@ -83,13 +83,32 @@ class PublicationTests(unittest.TestCase):
     def setUp(self):
         self.real_platform_guard = pub.writable_platform
         # The shipping guard is separately exercised without this patch below.
-        # Windows still runs real SQLite, file locks, backup and recovery; only
-        # the product support restriction is bypassed for this contract suite.
+        # Windows still runs real SQLite, file locks, backup and recovery. The
+        # product support guard and backup-handle access mode are adapted only
+        # inside this contract fixture; the real guard has its own tests below.
         if platform.system() == "Windows":
             guard = patch.object(pub, "writable_platform", return_value=None)
             guard.start()
             self.addCleanup(guard.stop)
         self.folder = Path(tempfile.mkdtemp(dir=self.root))
+        if platform.system() == "Windows":
+            # Windows cannot fsync a read-only descriptor. The production
+            # operation is POSIX-only, so give only this fixture's SQLite backup
+            # files writable handles and keep the actual fsync call intact.
+            original_open = Path.open
+
+            def open_fixture_backup(path, mode="r", *args, **kwargs):
+                if (
+                    mode == "rb"
+                    and path.name == "before.sqlite3"
+                    and path.is_relative_to(self.folder)
+                ):
+                    mode = "r+b"
+                return original_open(path, mode, *args, **kwargs)
+
+            backup_handles = patch.object(Path, "open", open_fixture_backup)
+            backup_handles.start()
+            self.addCleanup(backup_handles.stop)
         self.db = self.folder / "Engine Library/Database2/m.db"
         self.db.parent.mkdir(parents=True)
         c = sqlite3.connect(self.db)

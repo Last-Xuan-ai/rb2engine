@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -311,7 +311,10 @@ def test_appledouble_sidecar_for_mdb_removed_on_macos(
         sidecar.write_bytes(b"\x00\x05\x16\x07" + b"fake-appledouble")
 
     monkeypatch.setattr(os, "replace", replace_planting_appledouble)
-    monkeypatch.setattr(sys, "platform", "darwin")
+    import rb2engine.writer.build as build_mod
+
+    # Simulate only the sidecar helper; shared locks must use the actual OS.
+    monkeypatch.setattr(build_mod, "sys", SimpleNamespace(platform="darwin"))
 
     # Pre-existing user AppleDouble metadata that must survive.
     eng_lib = drive / "Engine Library"
@@ -365,7 +368,9 @@ def test_appledouble_removal_is_noop_on_non_macos(
         Path(dst).with_name(f"._{Path(dst).name}").write_bytes(b"sidecar")
 
     monkeypatch.setattr(os, "replace", replace_and_plant_sidecar)
-    monkeypatch.setattr(sys, "platform", "linux")
+    import rb2engine.writer.build as build_mod
+
+    monkeypatch.setattr(build_mod, "sys", SimpleNamespace(platform="linux"))
 
     report = ConversionReport()
     m_db = build_library(
