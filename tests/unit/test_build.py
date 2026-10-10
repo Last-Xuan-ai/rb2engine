@@ -717,7 +717,7 @@ def test_failure_after_staging_before_replace_preserves_mdb_and_clears_tmp(
 def test_fresh_drive_failure_removes_partial_engine_library(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A brand-new stick that never published m.db must not keep an empty tree."""
+    """A failed first conversion retains only the shared persistent lock inode."""
     import rb2engine.writer.database as database_mod
 
     _install_database_fakes(monkeypatch)
@@ -739,7 +739,9 @@ def test_fresh_drive_failure_removes_partial_engine_library(
     with pytest.raises(FatalError):
         build_library(lib, drive_root=drive, report=report, target_schema=(3, 0, 1))
 
-    assert not eng.exists(), "partial Engine Library must be wiped on fresh-drive abort"
+    assert [p.relative_to(eng).as_posix() for p in eng.rglob("*") if p.is_file()] == [
+        "Database2/.rb2engine.lock"
+    ]
 
 
 def test_preservation_hashes_artwork_overview_and_unknown(

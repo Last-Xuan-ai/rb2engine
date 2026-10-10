@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-10
+
+First release of the Last-Xuan-ai fork, based on upstream 0.5.0.
+
+### Added
+
+- Optional `waveforms` commands for three-band/RGB overview generation, cached
+  batches, existing-library preparation, publication planning, apply/check and
+  conflict-aware restore. Audio is reused; no second music library is created.
+- Native helpers build in a user cache. The NumPy extra and external FFmpeg tools
+  are opt-in; AAC additionally uses locally installed FFmpeg development libraries.
+- Anonymized validation for two independent 50-song tests and integration
+  regression against 220 revealed native references. Hardware playback remains
+  unverified; native evidence is from Apple Silicon macOS.
+- GitHub-only releases with wheel, source archive and checksums; no upstream
+  PyPI publishing. CI retains the nine OS/Python combinations and adds native
+  Apple Silicon integration.
+
+### Fixed
+
+- Accept Lexicon compact final PDB index groups only when the declared used heap
+  justifies the boundary; retain malformed-index and row-count checks.
+- Preserve timestamp corrections in constant-BPM grids within one millisecond
+  using linear-time compression. Keep existing tempo-change anchors and place
+  the final marker strictly after track end, including exact whole-beat ends.
+- Select the first audio stream consistently when probing and decoding a
+  multi-audio AAC file, including when another stream is marked default.
+- Decode ID3v2.4 frame unsynchronisation before grouping/DLI fields, preserving
+  stored frame boundaries and rejecting malformed or unsupported APIC payloads.
+
+### Changed
+
+- Conversion and waveform publication share a persistent process lock; failed
+  first conversions retain only the lock when no database was published.
+- Playlist chain reconstruction is linear instead of quadratic, with unchanged
+  ordering and corruption checks.
+- Waveform publication currently requires Engine schema 3.0.2. Backend builds
+  target macOS/Linux; Windows base conversion remains supported, while waveform
+  generation on Windows fails explicitly.
+
 ## [0.5.0] - 2026-08-01
 
 0.4.0 stopped a wrong database from being published. This release answers the

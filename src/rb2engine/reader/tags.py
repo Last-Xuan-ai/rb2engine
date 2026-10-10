@@ -204,7 +204,7 @@ def _id3_cover(f: BinaryIO) -> bytes | None:
         pass
 
     unsync = bool(flags & 0x80)
-    if unsync:
+    if unsync and major != 4:
         # Whole-tag unsynchronisation (v2.3 and earlier; rare on modern files).
         tag_body = _deunsync(tag_body)
 
@@ -228,12 +228,14 @@ def _id3_cover(f: BinaryIO) -> bytes | None:
     if major == 2:
         return _id3v22_frames(tag_body[offset:])
     if major in (3, 4):
-        return _id3v23_24_frames(tag_body[offset:], major=major)
+        return _id3v23_24_frames(tag_body[offset:], major=major, tag_unsync=unsync)
     _warn(f"tags: unsupported ID3 version 2.{major}")
     return None
 
 
-def _id3v23_24_frames(data: bytes, *, major: int) -> bytes | None:
+def _id3v23_24_frames(
+    data: bytes, *, major: int, tag_unsync: bool = False
+) -> bytes | None:
     """Walk ID3v2.3/v2.4 frames; prefer APIC picture type 3."""
     apics: list[tuple[int, bytes]] = []
     pos = 0
@@ -245,7 +247,7 @@ def _id3v23_24_frames(data: bytes, *, major: int) -> bytes | None:
             break
 
         size_bytes = data[pos + 4 : pos + 8]
-        # flags = data[pos + 8 : pos + 10]
+        format_flags = data[pos + 9]
         if major == 4:
             frame_size = _syncsafe_size(size_bytes)
         else:
@@ -257,13 +259,48 @@ def _id3v23_24_frames(data: bytes, *, major: int) -> bytes | None:
             break
 
         if frame_id == b"APIC":
-            parsed = _parse_apic_body(data[body_start:body_end])
+            raw_body = data[body_start:body_end]
+            body: bytes | None = raw_body
+            if major == 4:
+                body = _id3v24_payload(raw_body, format_flags, tag_unsync=tag_unsync)
+            parsed = _parse_apic_body(body) if body is not None else None
             if parsed is not None:
                 apics.append(parsed)
 
         pos = body_end
 
     return _pick_cover(apics)
+
+
+def _id3v24_payload(
+    body: bytes, format_flags: int, *, tag_unsync: bool
+) -> bytes | None:
+    """Decode v2.4 format fields in ID3 section 4.1.2 order.
+
+    Unsynchronisation covers every byte after the frame header, including
+    grouping identity and the data-length indicator. Undo it before reading
+    those fields, while the caller advances using the original stored size.
+    """
+    # Only grouping, unsynchronisation and data-length fields are supported.
+    # In particular, never mistake compressed/encrypted APIC bytes for an image.
+    if format_flags & ~0x43:
+        return None
+    if tag_unsync or format_flags & 0x02:
+        body = _deunsync(body)
+    pos = int(bool(format_flags & 0x40))
+    if pos > len(body):
+        return None
+    if format_flags & 0x01:
+        if pos + 4 > len(body):
+            return None
+        length_bytes = body[pos : pos + 4]
+        if any(value & 0x80 for value in length_bytes):
+            return None
+        expected_size = _syncsafe_size(length_bytes)
+        pos += 4
+        if expected_size != len(body) - pos:
+            return None
+    return body[pos:]
 
 
 def _id3v22_frames(data: bytes) -> bytes | None:

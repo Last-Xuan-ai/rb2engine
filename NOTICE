@@ -3,19 +3,38 @@ Copyright (c) 2026 J.R. Gutierrez
 
 Licensed under the MIT License. See LICENSE.
 
-rb2engine contains no third-party source code. Every runtime dependency is
-permissively licensed and installed from PyPI, not vendored:
+This fork preserves the upstream copyright and MIT license. Its additions
+are maintained at https://github.com/Last-Xuan-ai/rb2engine.
+
+The Python dependencies are installed separately, not vendored:
 
   construct     MIT           binary parsing of export.pdb
   pyrekordbox   MIT           ANLZ tag structures
   click         BSD-3-Clause  command-line interface
   rich          MIT           human-readable output
+  numpy         BSD-3-Clause  optional waveform processing
 
 mutagen (GPL-2.0-or-later) is a DEVELOPMENT dependency only. It is used
 exclusively in the test suite as an independent oracle confirming that
 `src/rb2engine/reader/tags.py` extracts byte-identical cover art. It is not
-imported by any module under `src/` and is not required at runtime, so no
-copyleft obligation attaches to rb2engine or its distribution.
+imported by any module under `src/`, is not required at runtime, and is not
+included in release artifacts.
+
+Optional FFmpeg runtime
+-----------------------
+Waveform generation executes the user's separately installed ffmpeg/ffprobe.
+The project's AAC helper source compiles locally and dynamically links the
+user's libavformat, libavcodec and libavutil. These libraries are real runtime
+dependencies, not merely format references. No FFmpeg source, binary, linked
+helper binary, Engine private library or commercial audio is shipped in this
+project's source archive or wheel.
+
+FFmpeg is LGPL-2.1-or-later by default, with optional GPL components that change
+the license of a configured build. The installed build determines the applicable
+terms; the MIT license for this project's source does not relicense FFmpeg.
+Redistributing a compiled helper or FFmpeg libraries requires examining that
+build's terms, notices and corresponding-source obligations. See:
+  https://ffmpeg.org/legal.html
 
 The projects below informed this work but are NOT included, copied, linked
 against, or redistributed here. They are credited because interoperability

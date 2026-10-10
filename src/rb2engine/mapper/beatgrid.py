@@ -4,7 +4,7 @@ rekordbox lists EVERY beat (~550 for a 6-min track). Engine wants SPARSE markers
 with tempo implied by (Δsample_offset)/(Δbeat_number) between adjacent markers.
 
 Algorithm (aligned with libdjinterop normalize_beatgrid + convert write path):
-1. Collapse constant-tempo runs to endpoints; emit a marker at each BPM change.
+1. Collapse linear timing runs; retain BPM changes and timestamp corrections.
 2. Shift the first marker so its beat index is -4 (Engine convention).
 3. Extrapolate the last marker to the first beat past total_samples.
 4. number_of_beats on each non-final marker = next.beat_number - this.beat_number.
@@ -22,6 +22,9 @@ from rb2engine.ir_engine import EngineBeatGrid, EngineBeatMarker
 
 # BPM stored as centi-bpm floats from ANLZ; equality within this is "same tempo".
 _BPM_EPS = 1e-4
+# PQTZ stores whole milliseconds. Compression must not add more than one
+# millisecond of timing error to any source beat, even at unchanged BPM.
+_MAX_TIMING_ERROR_SECONDS = 0.001
 
 
 def compress_beatgrid(
@@ -42,7 +45,6 @@ def compress_beatgrid(
         Exact sample count for end-of-track extrapolation; ``None`` falls back
         to the last beat offset so mapping still succeeds without mutagen.
     """
-    del sample_rate  # reserved for future absolute-BPM reconstruction paths
     if not grid.beats:
         return EngineBeatGrid(
             default_markers=[],
@@ -50,7 +52,10 @@ def compress_beatgrid(
             is_beatgrid_set=False,
         )
 
-    sparse = _compress_dense(grid.beats)
+    sparse = _compress_dense(
+        grid.beats,
+        tolerance_samples=max(1.0, sample_rate * _MAX_TIMING_ERROR_SECONDS),
+    )
     sample_count = _resolve_sample_count(sparse, total_samples)
     normalized = _normalize_beatgrid(sparse, sample_count)
     markers = _with_number_of_beats(normalized)
@@ -68,8 +73,17 @@ def _same_tempo(a: SourceBeat, b: SourceBeat) -> bool:
     return abs(a.bpm - b.bpm) <= _BPM_EPS
 
 
-def _compress_dense(beats: list[SourceBeat]) -> list[EngineBeatMarker]:
-    """Keep first, last, and any beat where BPM changes from the previous."""
+def _compress_dense(
+    beats: list[SourceBeat], *, tolerance_samples: float
+) -> list[EngineBeatMarker]:
+    """Retain source timing within tolerance in one pass over the beats.
+
+    Each beat bounds the slopes allowed from the current anchor. A new
+    endpoint outside their intersection would move an earlier beat too far,
+    so retain the previous endpoint and begin a new interval there. Every
+    completed interval therefore has a previously checked endpoint, with no
+    rescanning. BPM changes remain mandatory anchors as before.
+    """
     n = len(beats)
     if n == 1:
         b = beats[0]
@@ -83,10 +97,24 @@ def _compress_dense(beats: list[SourceBeat]) -> list[EngineBeatMarker]:
         ]
 
     keep: list[int] = [0]
+    minimum_slope, maximum_slope = -math.inf, math.inf
     for i in range(1, n):
-        # Boundary: first beat of a new tempo.
-        if not _same_tempo(beats[i - 1], beats[i]) and keep[-1] != i:
+        anchor = keep[-1]
+        distance = i - anchor
+        delta = float(beats[i].sample_offset - beats[anchor].sample_offset)
+        slope = delta / distance
+        if not minimum_slope <= slope <= maximum_slope:
+            # The previous candidate satisfied every prior timing bound.
+            keep.append(i - 1)
+            distance = 1
+            delta = float(beats[i].sample_offset - beats[i - 1].sample_offset)
+            minimum_slope, maximum_slope = -math.inf, math.inf
+        if not _same_tempo(beats[i - 1], beats[i]):
             keep.append(i)
+            minimum_slope, maximum_slope = -math.inf, math.inf
+        else:
+            minimum_slope = max(minimum_slope, (delta - tolerance_samples) / distance)
+            maximum_slope = min(maximum_slope, (delta + tolerance_samples) / distance)
     if keep[-1] != n - 1:
         keep.append(n - 1)
 
@@ -167,10 +195,8 @@ def _normalize_beatgrid(
     )
     if spb_end == 0:
         spb_end = spb if spb != 0 else 1.0
-    index_adjustment = math.ceil((sample_count - work[last][0]) / spb_end)
-    # Ensure we always clear the track end when still inside (ceil(0)==0).
-    if index_adjustment == 0 and work[last][0] <= sample_count:
-        index_adjustment = 1
+    # Strictly past the end, including when it lies exactly on a whole beat.
+    index_adjustment = math.floor((sample_count - work[last][0]) / spb_end) + 1
     work[last] = (
         work[last][0] + index_adjustment * spb_end,
         work[last][1] + index_adjustment,

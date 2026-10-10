@@ -274,11 +274,32 @@ def _iter_present_row_bases(
             f"{len_page}-byte page"
         )
 
+    # Rekordbox pages reserve a full 36-byte final index group. Lexicon can
+    # omit the unused offsets in that last group: 129 slots need 294 bytes,
+    # not 324. Expand the legacy heap boundary only when used_size proves
+    # that those bytes belong to the heap, and never into allocated offsets.
+    # A zero/short used_size does not justify accepting a row in padding.
+    compact_index_bytes = num_row_offsets * 2 + num_groups * 4
+    compact_heap_end = len_page - compact_index_bytes
+    used_end = PAGE_HEADER_SIZE + struct.unpack_from("<H", page, 30)[0]
+    if used_end > compact_heap_end:
+        raise UnsupportedFormatError(
+            f"export.pdb page {page_index}: used heap ends at {used_end}, "
+            f"overlapping the row index at {compact_heap_end}"
+        )
+    heap_end = max(heap_end, used_end)
+
     bases: list[int] = []
     present_count = 0
     for g in range(num_groups):
         group_base = len_page - (g * ROW_GROUP_SIZE)
         present_flags = struct.unpack_from("<H", page, group_base - 4)[0]
+        valid_slots = min(16, num_row_offsets - g * 16)
+        if present_flags >> valid_slots:
+            raise UnsupportedFormatError(
+                f"export.pdb page {page_index}: present flags in group {g} "
+                f"exceed its {valid_slots} allocated row offsets"
+            )
         for r in range(16):
             abs_i = g * 16 + r
             if abs_i >= num_row_offsets:
