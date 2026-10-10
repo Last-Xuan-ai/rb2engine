@@ -171,6 +171,43 @@ def build_library(
     *on_progress* is an optional ``(phase, done, total)`` sink; ``total <= 0``
     marks a phase whose size is not known in advance.
     """
+    from rb2engine.library_lock import library_lock
+
+    engine_lib = Path(drive_root) / ENGINE_LIBRARY_DIRNAME
+    library_existed = engine_lib.is_dir()
+    with library_lock(engine_lib / DATABASE2_DIRNAME):
+        return _build_library_locked(
+            lib,
+            drive_root=drive_root,
+            report=report,
+            path_base=path_base,
+            target_schema=target_schema,
+            database_uuid=database_uuid,
+            with_artwork=with_artwork,
+            on_progress=on_progress,
+            library_existed=library_existed,
+        )
+
+
+def _build_library_locked(
+    lib: SourceLibrary,
+    *,
+    library_existed: bool,
+    drive_root: Path,
+    report: ConversionReport,
+    path_base: str = "engine-lib",
+    target_schema: tuple[int, int, int] | None = None,
+    database_uuid: str | None = None,
+    with_artwork: bool = True,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """Orchestrate a full m.db write and return the final m.db path.
+
+    See module docstring for the swap protocol and preservation rules.
+
+    *on_progress* is an optional ``(phase, done, total)`` sink; ``total <= 0``
+    marks a phase whose size is not known in advance.
+    """
     drive_root = Path(drive_root)
     report.path_base = path_base
 
@@ -179,7 +216,6 @@ def build_library(
     m_db_path = db2 / M_DB_NAME
     tmp_path = db2 / M_DB_TMP_NAME
 
-    library_existed = engine_lib.is_dir()
     m_db_existed = m_db_path.is_file()
 
     # Reconcile before any read of the prior library (stray tmp must not be
@@ -311,9 +347,7 @@ def build_library(
             pass
         # Align map keys to rb_ids when the tracks worker keyed by position —
         # contract says rb_id → id; use returned map as-is.
-        report.counters.tracks_converted = len(track_id_map) if track_id_map else len(
-            engine_tracks
-        )
+        report.counters.tracks_converted = len(track_id_map) if track_id_map else len(engine_tracks)
         # Some implementations may key by insert order 1..N; rebuild.
         if (
             track_id_map
@@ -321,9 +355,7 @@ def build_library(
             and set(track_id_map.keys()) != set(rb_order)
             and set(track_id_map.keys()) == set(range(1, len(rb_order) + 1))
         ):
-            track_id_map = {
-                rb_order[i]: track_id_map[i + 1] for i in range(len(rb_order))
-            }
+            track_id_map = {rb_order[i]: track_id_map[i + 1] for i in range(len(rb_order))}
 
         # --- playlists ---------------------------------------------------------
         if on_progress is not None:
@@ -347,9 +379,7 @@ def build_library(
             conn.execute("SELECT COALESCE(MAX(id), 0) FROM Playlist").fetchone()[0]
         )
         max_entity_id = int(
-            conn.execute(
-                "SELECT COALESCE(MAX(id), 0) FROM PlaylistEntity"
-            ).fetchone()[0]
+            conn.execute("SELECT COALESCE(MAX(id), 0) FROM PlaylistEntity").fetchone()[0]
         )
 
         conn.close()
@@ -404,9 +434,7 @@ def build_library(
             check_conn = sqlite3.connect(f"file:{tmp_path}?mode=ro", uri=True)
             try:
                 if intended_playlists:
-                    playlists_mod.assert_entities_match_intent(
-                        check_conn, intended_playlists
-                    )
+                    playlists_mod.assert_entities_match_intent(check_conn, intended_playlists)
 
                 # Independent oracle. The check above compares the database
                 # against what insert_playlists *intended*, and both sides of it
@@ -423,9 +451,7 @@ def build_library(
                 )
                 if problems:
                     detail = "; ".join(p.describe() for p in problems[:5])
-                    more = (
-                        f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
-                    )
+                    more = f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
                     raise RuntimeError(
                         "playlist-scoped recheck against the source failed, so "
                         f"nothing was published: {detail}{more}"
@@ -463,7 +489,15 @@ def build_library(
             try:
                 # Only remove if we never successfully published an m.db.
                 if not m_db_path.is_file():
-                    _rmtree(engine_lib)
+                    # Keep the lock inode stable for processes that may already
+                    # have opened it. Remove every incomplete product artifact.
+                    for child in engine_lib.iterdir():
+                        if child == db2:
+                            for entry in child.iterdir():
+                                if entry.name != ".rb2engine.lock":
+                                    _rmtree(entry)
+                        else:
+                            _rmtree(child)
             except OSError as rm_exc:
                 logger.error("failed to remove partial %s: %s", engine_lib, rm_exc)
 
@@ -482,6 +516,7 @@ def build_library(
 # ---------------------------------------------------------------------------
 # internals
 # ---------------------------------------------------------------------------
+
 
 def _read_prior_identity(
     m_db_path: Path | None,
@@ -502,9 +537,7 @@ def _read_prior_identity(
 
     uuid_val: str | None = None
     try:
-        conn = sqlite3.connect(
-            f"file:{Path(m_db_path).resolve()}?mode=ro", uri=True
-        )
+        conn = sqlite3.connect(f"file:{Path(m_db_path).resolve()}?mode=ro", uri=True)
         try:
             row = conn.execute(
                 "SELECT schemaVersionMajor, schemaVersionMinor, "

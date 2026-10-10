@@ -73,7 +73,10 @@ def walk_entity_chain(
         if eid in seen:  # corrupt chain must not spin forever
             break
         seen.add(eid)
-        order.insert(0, track_id)
+        # This walk follows predecessors from the tail. Appending and reversing
+        # once keeps long playlists linear instead of shifting the whole list
+        # for every entry.
+        order.append(track_id)
         curr = eid
 
     # A row that no chain walk reaches is still a row Engine may honour; make
@@ -84,4 +87,5 @@ def walk_entity_chain(
             f"{len(rows)} PlaylistEntity rows but the nextEntityId chain "
             f"reaches {len(order)} — chain is inconsistent",
         )
+    order.reverse()
     return order

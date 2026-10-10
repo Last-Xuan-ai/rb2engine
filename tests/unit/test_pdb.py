@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from rb2engine.errors import UnsupportedFormatError
-from rb2engine.reader.pdb import parse_export_pdb
+from rb2engine.reader.pdb import _iter_present_row_bases, parse_export_pdb
 
 # ---------------------------------------------------------------------------
 # Synthetic DeviceSQL builders (hand-authored bytes, not from our parser)
@@ -1241,3 +1241,74 @@ def test_g1d_well_formed_page_with_deleted_rows_still_parses(tmp_path: Path) -> 
     lib = parse_export_pdb(path, tmp_path)
 
     assert lib.playlists[0].track_rb_ids == [10, 20]
+
+
+def _partial_index_page(*, last_row: int, used_end: int) -> bytes:
+    """129 slots in 4096 bytes: the final group has one offset, not sixteen.
+
+    Eight complete groups occupy 288 bytes. The last offset and its flags
+    occupy six, placing the compact index at 3802; a padded group starts at
+    3772. These are hand-authored layout boundaries, not parser output.
+    """
+    page = bytearray(4096)
+    page[:PAGE_HEADER] = _page_header(
+        page_index=3,
+        page_type=8,
+        next_page=99,
+        num_row_offsets=129,
+        num_rows=129,
+        used_size=used_end - PAGE_HEADER,
+    )
+    offsets: list[int | None] = [index * 12 for index in range(128)]
+    offsets.append(last_row - PAGE_HEADER)
+    _pack_row_index(page, 4096, offsets)
+    return bytes(page)
+
+
+def test_compact_final_index_group_preserves_lexicon_last_row() -> None:
+    """Do not reject Lexicon's final row just because padded offsets overlap it."""
+    page = _partial_index_page(last_row=3772, used_end=3802)
+    bases = _iter_present_row_bases(page, 4096, 129, 129, 3)
+    assert bases == [PAGE_HEADER + index * 12 for index in range(128)] + [3772]
+
+
+def test_padded_final_group_still_accepts_original_layout() -> None:
+    """A regular padded group keeps the same row boundary and order."""
+    page = _partial_index_page(last_row=3760, used_end=3772)
+    bases = _iter_present_row_bases(page, 4096, 129, 129, 3)
+    assert bases == [PAGE_HEADER + index * 12 for index in range(128)] + [3760]
+
+
+@pytest.mark.parametrize("used_end", [PAGE_HEADER, 3772])
+def test_padding_is_not_reclassified_as_heap_without_used_size(used_end: int) -> None:
+    """A damaged row offset in padded space must not become valid accidentally."""
+    page = _partial_index_page(last_row=3772, used_end=used_end)
+    with pytest.raises(UnsupportedFormatError, match="row offset"):
+        _iter_present_row_bases(page, 4096, 129, 129, 3)
+
+
+def test_compact_group_rejects_offset_past_declared_used_heap() -> None:
+    """Only the documented used heap can reclaim a partial group's padding."""
+    page = _partial_index_page(last_row=3790, used_end=3790)
+    with pytest.raises(UnsupportedFormatError, match="row offset"):
+        _iter_present_row_bases(page, 4096, 129, 129, 3)
+
+
+def test_compact_group_rejects_used_heap_overlapping_allocated_index() -> None:
+    page = _partial_index_page(last_row=3772, used_end=3803)
+    with pytest.raises(UnsupportedFormatError, match="overlapping the row index"):
+        _iter_present_row_bases(page, 4096, 129, 129, 3)
+
+
+def test_compact_group_rejects_offset_inside_allocated_index() -> None:
+    page = _partial_index_page(last_row=3802, used_end=3802)
+    with pytest.raises(UnsupportedFormatError, match="row offset"):
+        _iter_present_row_bases(page, 4096, 129, 129, 3)
+
+
+def test_partial_group_rejects_present_flag_without_allocated_offset() -> None:
+    """An out-of-range flag cannot silently resurrect an unallocated row."""
+    page = bytearray(_partial_index_page(last_row=3772, used_end=3802))
+    struct.pack_into("<H", page, 4096 - 8 * 36 - 4, 0b11)
+    with pytest.raises(UnsupportedFormatError, match="allocated row offsets"):
+        _iter_present_row_bases(bytes(page), 4096, 129, 129, 3)

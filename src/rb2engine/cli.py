@@ -1,7 +1,8 @@
-"""click app: convert | inspect | verify | doctor; exit codes 0/1/2.
+"""Click app for conversion, verification and optional overview publication.
 
 All four commands are implemented. ``inspect``, ``verify`` and ``doctor`` are
-strictly read-only; only ``convert`` writes, and only inside Engine Library/.
+strictly read-only; ``convert`` writes only inside Engine Library/.
+The optional ``waveforms`` group documents its cache and publication writes.
 ``inspect`` exits 0 even when the source carries warnings or skips —
 inspection is not conversion.
 """
@@ -18,6 +19,7 @@ import click
 from rb2engine import __version__
 from rb2engine.errors import FatalError, UnsupportedFormatError
 from rb2engine.logging import configure_logging, log_event
+from rb2engine.waveforms_cli import waveforms
 
 if TYPE_CHECKING:  # import only for typing — keeps CLI startup light
     from rb2engine.report import ConversionReport
@@ -49,9 +51,7 @@ def load_source_library(drive: Path) -> Any:
     try:
         from rb2engine.reader import pdb as pdb_mod
     except ImportError as exc:
-        raise FatalError(
-            "reader.pdb is unavailable; cannot inspect this drive yet."
-        ) from exc
+        raise FatalError("reader.pdb is unavailable; cannot inspect this drive yet.") from exc
 
     for name in ("read_library", "load_library", "parse_library", "open_pdb"):
         fn = getattr(pdb_mod, name, None)
@@ -196,9 +196,7 @@ def _emit_report(
 
     report.print_human()
     try:
-        target = resolve_report_path(
-            drive, override=override, library_ready=not report.fatal
-        )
+        target = resolve_report_path(drive, override=override, library_ready=not report.fatal)
         written = report.write_json(target)
         click.echo(f"report: {written}")
     except OSError as exc:
@@ -289,9 +287,7 @@ def convert_cmd(
                 f"--target-schema must look like 3.0.2, got {target_schema!r}"
             ) from exc
         if len(parts) != 3:
-            raise click.UsageError(
-                f"--target-schema must have three parts, got {target_schema!r}"
-            )
+            raise click.UsageError(f"--target-schema must have three parts, got {target_schema!r}")
         schema = (parts[0], parts[1], parts[2])
 
     # A big stick spends minutes opening files; without this a running
@@ -354,9 +350,7 @@ def convert_cmd(
         from rb2engine.report import ENGINE_LIBRARY_DIRNAME, append_journal
 
         try:
-            journal = append_journal(
-                Path(drive) / ENGINE_LIBRARY_DIRNAME, report.provenance
-            )
+            journal = append_journal(Path(drive) / ENGINE_LIBRARY_DIRNAME, report.provenance)
             click.echo(f"journal: {journal}")
         except OSError as exc:
             click.echo(
@@ -461,6 +455,9 @@ def doctor_cmd(ctx: click.Context, engine_db: Path | None, drive: Path | None) -
     for line in result.lines:
         click.echo(line)
     ctx.exit(0 if result.ok else 1)
+
+
+main.add_command(waveforms)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1,6 +1,6 @@
 [project]
 name = "rb2engine"
-version = "0.5.0"
+version = "0.6.0"
 description = "Convert a rekordbox USB export into an Engine DJ library, in place, without duplicating your music"
 readme = "README.md"
 license = "MIT"
@@ -24,8 +24,8 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
-# All runtime dependencies are permissively licensed (MIT / BSD), which keeps
-# rb2engine honestly MIT. mutagen (GPL-2.0-or-later) was deliberately removed
+# Base Python dependencies are permissively licensed (MIT / BSD). See NOTICE
+# for the optional external FFmpeg runtime. mutagen (GPL-2.0-or-later) was removed
 # as a runtime dependency and replaced by reader/tags.py; it remains a DEV
 # dependency only, where it serves as the oracle for the tag-parity tests.
 dependencies = [
@@ -35,10 +35,13 @@ dependencies = [
     "rich>=13",            # MIT — human-readable report/progress
 ]
 
+[project.optional-dependencies]
+waveforms = ["numpy>=1.26,<3"]  # BSD-3-Clause
+
 [project.urls]
-Homepage = "https://github.com/jrgutier/rb2engine"
-Repository = "https://github.com/jrgutier/rb2engine"
-Issues = "https://github.com/jrgutier/rb2engine/issues"
+Homepage = "https://github.com/Last-Xuan-ai/rb2engine"
+Repository = "https://github.com/Last-Xuan-ai/rb2engine"
+Issues = "https://github.com/Last-Xuan-ai/rb2engine/issues"
 
 [project.scripts]
 rb2engine = "rb2engine.cli:main"
@@ -66,7 +69,9 @@ packages = ["src/rb2engine"]
 [tool.hatch.build.targets.sdist]
 # Keep the sdist lean: ship the package and its captured DDL, not the
 # multi-hundred-MB test corpus or local planning artifacts.
-include = ["src/rb2engine", "README.md", "LICENSE", "NOTICE"]
+include = ["src/rb2engine", "README.md", "LICENSE", "NOTICE", "CHANGELOG.md",
+           "docs/waveforms.md", "docs/waveform-validation.md",
+           "docs/waveform-validation.json", "docs/integrated-waveform-validation.json"]
 
 [tool.pytest.ini_options]
 markers = [
@@ -131,7 +136,8 @@ ignore = [
 ]
 
 [tool.mypy]
-python_version = "3.11"
+# Follow the active supported interpreter so dependency stubs use its syntax.
+# Ruff retains the package source syntax floor at Python 3.11.
 mypy_path = "src"
 packages = ["rb2engine"]
 strict = false

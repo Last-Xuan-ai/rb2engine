@@ -619,7 +619,7 @@ def _unsync(data: bytes) -> bytes:
 
 
 def test_id3_unsynchronisation_deescapes_jpeg(tmp_path: Path) -> None:
-    """Whole-tag unsync flag (0x80): FF 00 in the tag body must become FF.
+    """The v2.4 tag unsync flag applies to each stored frame body.
 
     JPEG magic is FF D8 FF … so without de-escaping the image is corrupted
     (extra 0x00 bytes) or unreadable. Hand-built: we embed known JPEG bytes,
@@ -631,12 +631,12 @@ def test_id3_unsynchronisation_deescapes_jpeg(tmp_path: Path) -> None:
     image = _JPEG_1X1
     assert b"\xff" in image  # precondition: unsync will touch this payload
     apic_body = _apic_body(image, encoding=0, mime=b"image/jpeg")
-    frame = b"APIC" + _syncsafe(len(apic_body)) + b"\x00\x00" + apic_body
-    # Apply unsync to the tag body (frames), not the 10-byte header.
-    unsynced_body = _unsync(frame)
-    header = b"ID3" + bytes([4, 0, 0x80]) + _syncsafe(len(unsynced_body))
+    stored_body = _unsync(apic_body)
+    # ID3v2.4 section 4: frame size is AFTER unsynchronisation, unlike v2.3.
+    frame = b"APIC" + _syncsafe(len(stored_body)) + b"\x00\x02" + stored_body
+    header = b"ID3" + bytes([4, 0, 0x80]) + _syncsafe(len(frame))
     path = tmp_path / "unsync.mp3"
-    path.write_bytes(header + unsynced_body + b"\xff\xfb\x90\x00" + b"\x00" * 32)
+    path.write_bytes(header + frame + b"\xff\xfb\x90\x00" + b"\x00" * 32)
 
     got = embedded_cover_bytes(path)
     assert got == image
@@ -645,6 +645,70 @@ def test_id3_unsynchronisation_deescapes_jpeg(tmp_path: Path) -> None:
     assert b"\xff\x00" not in got or image.count(b"\xff\x00") == got.count(
         b"\xff\x00"
     )
+
+
+@pytest.mark.parametrize("tag_unsync", [False, True])
+@pytest.mark.parametrize("group_id", [None, 7, 255])
+def test_id3v24_group_unsync_and_length_fields(
+    tmp_path: Path, tag_unsync: bool, group_id: int | None
+) -> None:
+    """Section 4.1.2 unsync covers the prefix too; FF group IDs insert a byte.
+
+    The expected image is hand-authored before any transforms. The leading
+    FF 00 pair belongs to group identity, so decoding only APIC data would
+    read the wrong four-byte length field and discard or corrupt the cover.
+    """
+    image = b"\xff\xd8\xff\xe0\x00\x10JFIF\xff\x00\xff\xd9"
+    payload = _apic_body(image, encoding=0, mime=b"image/jpeg")
+    prefix = b"" if group_id is None else bytes([group_id])
+    stored = _unsync(prefix + _syncsafe(len(payload)) + payload)
+    flags = 0x03 | (0x40 if group_id is not None else 0)
+    frame = b"APIC" + _syncsafe(len(stored)) + bytes([0, flags]) + stored
+    header = b"ID3" + bytes([4, 0, 0x80 if tag_unsync else 0]) + _syncsafe(len(frame))
+    path = tmp_path / "grouped.mp3"
+    path.write_bytes(header + frame)
+
+    assert embedded_cover_bytes(path) == image
+
+
+def test_id3v24_frame_sizes_still_locate_later_cover_after_unsync(tmp_path: Path) -> None:
+    """Do not shrink the tag before following on-disk frame sizes."""
+    text = _unsync(b"\x00prefix\xff\xe0suffix")
+    first = b"TIT2" + _syncsafe(len(text)) + b"\x00\x02" + text
+    payload = _apic_body(_PNG_1X1, encoding=0)
+    stored = _unsync(payload)
+    second = b"APIC" + _syncsafe(len(stored)) + b"\x00\x02" + stored
+    frames = first + second
+    path = tmp_path / "later_cover.mp3"
+    path.write_bytes(b"ID3" + bytes([4, 0, 0x80]) + _syncsafe(len(frames)) + frames)
+
+    assert embedded_cover_bytes(path) == _PNG_1X1
+
+
+@pytest.mark.parametrize("length_delta", [-1, 1])
+def test_id3v24_data_length_mismatch_is_rejected(tmp_path: Path, length_delta: int) -> None:
+    """A declared size must never truncate the returned image to fit itself."""
+    payload = _apic_body(_PNG_1X1, encoding=0)
+    body = _syncsafe(len(payload) + length_delta) + payload
+    frame = b"APIC" + _syncsafe(len(body)) + b"\x00\x01" + body
+    path = tmp_path / "bad_length.mp3"
+    path.write_bytes(_build_id3v2(major=4, frames=[frame]))
+
+    assert embedded_cover_bytes(path) is None
+
+
+@pytest.mark.parametrize("flags", [0x04, 0x08, 0x80])
+def test_id3v24_unsupported_frame_format_keeps_later_cover(
+    tmp_path: Path, flags: int
+) -> None:
+    """Encrypted/compressed/unknown payloads must not be parsed as APIC."""
+    body = _apic_body(_JPEG_1X1, encoding=0)
+    first = b"APIC" + _syncsafe(len(body)) + bytes([0, flags]) + body
+    second = _wrap_apic_v24(_apic_body(_PNG_1X1, encoding=0))
+    path = tmp_path / "unsupported.mp3"
+    path.write_bytes(_build_id3v2(major=4, frames=[first, second]))
+
+    assert embedded_cover_bytes(path) == _PNG_1X1
 
 
 def test_id3_unsync_never_returns_escaped_ff00_corruption(tmp_path: Path) -> None:

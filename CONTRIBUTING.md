@@ -9,9 +9,9 @@ style preference.
 Requires **Python 3.11+** and [uv](https://github.com/astral-sh/uv).
 
 ```bash
-git clone https://github.com/jrgutier/rb2engine
+git clone https://github.com/Last-Xuan-ai/rb2engine
 cd rb2engine
-uv sync
+uv sync --all-extras --dev
 ```
 
 Run the unit suite (default; no hardware required):
@@ -27,7 +27,7 @@ uv run ruff check src/ tests/
 uv run mypy src/
 ```
 
-Format check (same ruff config as CI):
+Optional formatting check (avoid reformatting unrelated files):
 
 ```bash
 uv run ruff format --check src/ tests/
@@ -48,6 +48,7 @@ uv run rb2engine convert --help
 | `src/rb2engine/ir.py`, `ir_engine.py` | Decoupling boundary — no cross-imports of side types |
 | `src/rb2engine/mapper/` | Semantics (keys, cues, beatgrids, track fields) |
 | `src/rb2engine/writer/` | Engine IR → `m.db` (DDL, blobs, tracks, playlists) |
+| `src/rb2engine/overviews/` | Optional decoder/DSP, verified caches and waveform publication |
 | `src/rb2engine/writer/ddl/` | Engine-authored schema captures — see that README |
 | `tests/unit/` | Fast tests; golden fixtures under `tests/fixtures/` |
 | `tests/fixtures/golden/` | **Read-only** Engine-authored artifacts — never overwrite |
@@ -104,7 +105,9 @@ authoring checklist under `tests/fixtures/AUTHORING.md` for committable data.
 
 ### 4. Non-destructive guarantee is tested, not asserted
 
-The product promise is: **nothing outside `Engine Library/` may be written**.
+On the target drive, library changes must stay inside `Engine Library/`.
+Native helpers and generated waveform caches use a separate user cache. Explicit
+report/cache destinations are caller-controlled and must never overwrite inputs.
 
 That is enforced by tests that walk the drive tree before and after a
 conversion (and by related checks that source audio hashes are unchanged after
@@ -138,11 +141,38 @@ uv run pytest tests/unit/test_schema.py -v
 ## License
 
 Contributions are under the same MIT license as the project (see `LICENSE`).
-Runtime dependencies must remain permissively licensed (MIT / BSD). GPL tools
-(e.g. mutagen) may be **dev-only** oracles, never imported from `src/`.
+Base Python dependencies must remain permissively licensed. Mutagen is a
+**dev-only** oracle, never imported from `src/`. The optional waveform backend
+has separately installed FFmpeg runtime dependencies: update NOTICE accurately
+when changing that boundary, and do not bundle FFmpeg or private vendor binaries.
 
 ## Questions
 
 Open a GitHub issue. For conversion failures on a real stick, attach the
 `Engine Library/rb2engine-report.json` (redact paths if needed) and the schema
 triple from `Information` if you can read it from a **copy** of `m.db`.
+
+## Optional waveforms and release checks
+
+Keep base imports and `--help` independent of NumPy, compilers and FFmpeg.
+Mocked backend tests run on all three CI systems. Native tests skip only when
+their declared platform/tool prerequisites are absent; a dedicated Apple Silicon
+job installs FFmpeg and pkg-config and exercises native reference, publication,
+recovery and AAC generation. The coverage floor remains 85%.
+
+Use an isolated native cache for local testing when needed:
+
+```sh
+RB2ENGINE_OVERVIEWS_BUILD_CACHE=/tmp/rb2engine-build uv run pytest -m "not real_stick" --cov
+```
+
+Expectations for DSP tests must come from independent Engine output or explicit
+mathematics. Do not weaken byte/time gates or label revealed-sample regression
+as new independent validation. Public reports must omit private titles, paths,
+audio hashes and databases. See [waveform validation](docs/waveform-validation.md).
+
+This fork releases wheel/source archives and checksums through GitHub Releases.
+The release workflow reuses CI, then builds with `uv build` and checks metadata
+with `uvx twine check`. A version tag must match `pyproject.toml`; manual workflow
+dispatch validates/builds without publishing. The workflow does not publish to
+upstream PyPI or use its trusted-publisher identity.

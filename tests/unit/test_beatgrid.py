@@ -8,6 +8,8 @@ tests pin the compression invariants that keep grids aligned mid-set.
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 
 from rb2engine.ir import SourceBeat, SourceBeatgrid
@@ -98,6 +100,78 @@ def _markers(grid: EngineBeatGrid) -> list[EngineBeatMarker]:
     return grid.default_markers
 
 
+def _reconstructed_sample(markers: list[EngineBeatMarker], beat: int) -> float:
+    """Engine's documented linear interpolation, independent of compression."""
+    for left, right in pairwise(markers):
+        if left.beat_number <= beat <= right.beat_number:
+            fraction = (beat - left.beat_number) / (right.beat_number - left.beat_number)
+            return left.sample_offset + fraction * (right.sample_offset - left.sample_offset)
+    raise AssertionError(f"beat {beat} outside marker range")
+
+
+@pytest.mark.parametrize("sample_rate", [44100, 48000])
+@pytest.mark.parametrize("correction", ["isolated", "step", "drift"])
+def test_constant_bpm_preserves_manual_timestamp_geometry(
+    sample_rate: int, correction: str
+) -> None:
+    """Reported 120 BPM does not erase observed beat-position corrections.
+
+    These are explicit millisecond PQTZ positions: one displaced beat, a
+    persistent edit from that beat onward, or a continuously drifting grid.
+    The expected positions are these inputs, not the compressor's output.
+    """
+    beats = []
+    for index in range(96):
+        correction_ms = 0
+        if (correction == "isolated" and index == 48) or (correction == "step" and index >= 48):
+            correction_ms = 12
+        elif correction == "drift":
+            correction_ms = index * index // 20
+        beats.append(
+            SourceBeat(
+                beat_in_bar=index % 4 + 1,
+                sample_offset=round((index * 500 + correction_ms) * sample_rate / 1000),
+                bpm=120.0,
+            )
+        )
+    source = SourceBeatgrid(beats=beats, is_adjusted=True)
+    total = beats[-1].sample_offset + sample_rate // 2
+
+    markers = _markers(compress_beatgrid(source, sample_rate=sample_rate, total_samples=total))
+
+    assert len(markers) > 2
+    assert markers[0].beat_number == -4
+    assert markers[-1].sample_offset > total
+    for index, beat in enumerate(beats):
+        assert abs(_reconstructed_sample(markers, index) - beat.sample_offset) <= (
+            sample_rate / 1000 + 1e-7
+        )
+
+
+def test_millisecond_quantized_constant_grid_remains_sparse() -> None:
+    """The tolerance removes timestamp quantization without losing real edits."""
+    beats = [
+        SourceBeat(
+            beat_in_bar=index % 4 + 1,
+            sample_offset=round(round(index * 60000 / 128) * SAMPLE_RATE / 1000),
+            bpm=128.0,
+        )
+        for index in range(550)
+    ]
+    source = SourceBeatgrid(beats=beats, is_adjusted=False)
+    total = beats[-1].sample_offset + round(_spb(128))
+
+    markers = _markers(compress_beatgrid(source, sample_rate=SAMPLE_RATE, total_samples=total))
+
+    # Conservative streaming bounds can keep a few extra quantized anchors,
+    # but a regular six-minute grid must still compress at least fiftyfold.
+    assert len(markers) * 50 < len(beats)
+    for index, beat in enumerate(beats):
+        assert abs(_reconstructed_sample(markers, index) - beat.sample_offset) <= (
+            SAMPLE_RATE / 1000 + 1e-7
+        )
+
+
 class TestConstantTempoCollapses:
     """Constant BPM must become exactly 2 markers (start + end).
 
@@ -143,6 +217,14 @@ class TestFirstIndexAndExtrapolation:
         out = compress_beatgrid(src, sample_rate=SAMPLE_RATE, total_samples=total)
         last = _markers(out)[-1]
         assert last.sample_offset > total
+
+    def test_end_exactly_on_a_beat_is_still_extrapolated_past_end(self) -> None:
+        src = _dense_constant(120.0, 16)
+        total = 16 * 22050
+        out = compress_beatgrid(src, sample_rate=SAMPLE_RATE, total_samples=total)
+        last = _markers(out)[-1]
+        assert last.beat_number == 17
+        assert last.sample_offset == 17 * 22050
 
     def test_number_of_beats_spans_to_next_marker(self) -> None:
         """number_of_beats on a marker is the run length to the next marker.
